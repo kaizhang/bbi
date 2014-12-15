@@ -1,9 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
-module BBI where
 
-import qualified Data.HashMap.Strict as M
-import Data.Binary.Strict.Get
+module Data.BBI where
+
+import qualified Data.Map.Strict as M
+import Control.Applicative ((<$>))
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import System.IO
@@ -12,19 +13,16 @@ import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Control.Monad.State
 import Codec.Compression.Zlib (decompress)
+import Data.BBI.Utils
 
 data FileType = BigBed
               | BigWig
     deriving (Show)
 
-data Endianness = LE
-                | BE
-    deriving (Show)
-
 data BbiFile = BbiFile
     { _filehandle :: Handle
     , _header :: !BbiFileHeader
-    , _chromTree :: !(M.HashMap B.ByteString (Int, Int))
+    , _chromTree :: !(M.Map B.ByteString (Int, Int))
     , _rtree :: !RTreeHeader
     } deriving (Show)
 
@@ -47,7 +45,7 @@ data BbiFileHeader = BbiFileHeader
 openBbiFile :: FilePath -> IO BbiFile
 openBbiFile fl = do
     h <- openFile fl ReadMode
-    header <- fmap fromJust $ getBbiFileHeader h
+    header <- fromJust <$> getBbiFileHeader h
     Right t <- getChromTreeAsList (_endian header) h (fromIntegral $ _chrTreeOffset header)
     Right rtree <- getRTreeHeader (_endian header) h (fromIntegral $ _fullIndexOffset header)
     return $ BbiFile h header (M.fromList t) rtree
@@ -74,43 +72,6 @@ getBbiFileHeader h = do
             r <- hReadInt64 e h
             return . Just $ BbiFileHeader t e v zl ct fd fi fc df as ts ub r
         _ -> return Nothing
-
-hReadBool :: Handle -> IO Bool
-hReadBool h = do
-    bs <- B.hGet h $ 1
-    return . fromRight . fst . runGet (fmap (toEnum . fromIntegral) getWord8) $ bs
-
-readInt64 :: Endianness -> B.ByteString -> Int
-readInt64 LE = fromIntegral . fromRight . fst . runGet getWord64le
-readInt64 BE = fromIntegral . fromRight . fst . runGet getWord64be
-{-# INLINE readInt64 #-}
-
-hReadInt64 :: Endianness -> Handle -> IO Int
-hReadInt64 e h = fmap (readInt64 e) . B.hGet h $ 8
-{-# INLINE hReadInt64 #-}
-
-readInt32 :: Endianness -> B.ByteString -> Int
-readInt32 LE = fromIntegral . fromRight . fst . runGet getWord32le
-readInt32 BE = fromIntegral . fromRight . fst . runGet getWord32be
-{-# INLINE readInt32 #-}
-
-hReadInt32 :: Endianness -> Handle -> IO Int
-hReadInt32 e h = fmap (readInt32 e) . B.hGet h $ 4
-{-# INLINE hReadInt32 #-}
-
-readInt16 :: Endianness -> B.ByteString -> Int
-readInt16 LE = fromIntegral . fromRight . fst . runGet getWord16le
-readInt16 BE = fromIntegral . fromRight . fst . runGet getWord16be
-{-# INLINE readInt16 #-}
-
-hReadInt16 :: Endianness -> Handle -> IO Int
-hReadInt16 e h = fmap (readInt16 e) . B.hGet h $ 2
-{-# INLINE hReadInt16 #-}
-
-fromRight :: Either a b -> b
-fromRight (Right x) = x
-fromRight _ = error "Is Left"
-{-# INLINE fromRight #-}
 
 getFileType :: Handle -> IO (Maybe (FileType, Endianness))
 getFileType h = do
@@ -141,7 +102,7 @@ getChromTreeAsList e h offset = do
            valSize <- hReadInt32 e h
            itemCount <- hReadInt64 e h
            reserved <- hReadInt64 e h
-           fmap Right $ traverseTree blockSize keySize valSize
+           Right <$> traverseTree blockSize keySize valSize
   where
     traverseTree bs ks vs = go
       where
@@ -162,18 +123,14 @@ getChromTreeAsList e h offset = do
                   count <- hReadInt16 e h
                   return (isLeaf, count)
 
-    readLeafItem n = do key <- fmap (B.filter (/=0)) $ B.hGet h n
+    readLeafItem n = do key <- B.filter (/=0) <$> B.hGet h n
                         chromId <- hReadInt32 e h
                         chromSize <- hReadInt32 e h
                         return (key, (chromId, chromSize))
 
-    readNonLeafItem n = do key <- fmap (B.filter (/=0)) $ B.hGet h n
+    readNonLeafItem n = do key <- B.filter (/=0) <$> B.hGet h n
                            childOffset <- hReadInt64 e h
                            return (key, childOffset)
-
-data RTree = Node !Int !Int !Int !Int ![RTree]
-           | Leaf !Int !Int !Int !Int !Int !Int
-    deriving (Show)
 
 data RTreeHeader = RTreeHeader
     { _blockSize :: Int
@@ -207,72 +164,6 @@ getRTreeHeader e h i = do
   where
     rtmagic = 0x2468ACE0
 
-{-
-readRTree :: Endianness -> Handle -> Integer -> IO RTree
-readRTree e h i = do
-    hSeek h AbsoluteSeek i
-    checkResult <- checkMagic h rtmagic
-    if isNothing checkResult
-       then error "read RTree fail"
-       else do
-           let e = fromJust checkResult
-           blockSize <- hReadInt32 e h
-           itemCount <- hReadInt64 e h
-           startChromIx <- hReadInt32 e h
-           startBase <- hReadInt32 e h
-           endChromIx <- hReadInt32 e h
-           endBase <- hReadInt32 e h
-           endFileOffset <- hReadInt64 e h
-           itemsPerSlot <- hReadInt32 e h
-           reserved <- hReadInt32 e h
-           trees <- buildTree e
-           return $ Node startChromIx startBase endChromIx endBase trees
-
-  where
-    buildTree e' = do pos <- hTell h
-                      go pos
-      where
-        go i' = do hSeek h AbsoluteSeek i'
-                   (isLeaf, n) <- readNode
-                   if isLeaf
-                      then replicateM n $ readLeafItem
-                      else replicateM n $ readNonLeafItem 
-
-        readNode = do isLeaf <- hReadBool h
-                      _ <- hReadBool h
-                      count <- hReadInt16 e' h
-                      return (isLeaf, count)
-
-        readLeafItem = do a <- hReadInt32 e' h
-                          b <- hReadInt32 e' h
-                          c <- hReadInt32 e' h
-                          d <- hReadInt32 e' h
-                          e <- hReadInt64 e' h
-                          f <- hReadInt64 e' h
-                          return $ Leaf a b c d e f
-
-        readNonLeafItem = do a <- hReadInt32 e' h
-                             b <- hReadInt32 e' h
-                             c <- hReadInt32 e' h
-                             d <- hReadInt32 e' h
-                             e <- hReadInt64 e' h
-                             subtrees <- go $ fromIntegral e
-                             return $ Node a b c d subtrees
-
-    rtmagic = 0x2468ACE0
-
--- | check 4 bytes magic
-checkMagic :: Handle -> Int -> IO (Maybe Endianness)
-checkMagic h m = do
-    bs <- B.hGet h 4
-    let magicLE = readInt32 LE bs
-        magicBE = readInt32 BE bs
-    case () of
-        _ | magicLE == m -> return $ Just LE
-          | magicBE == m -> return $ Just BE
-          | otherwise -> return Nothing
-          -}
-
 overlap :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> Bool
 overlap qChr qStart qEnd rStartChr rStart rEndChr rEnd = 
     (qChr, qStart) < (rEndChr, rEnd) && (qChr, qEnd) > (rStartChr, rStart)
@@ -283,14 +174,14 @@ query fl (chr, start, end)
     | isNothing chrId = return ()
     | otherwise = do
         let cid = fst . fromJust $ chrId
-        if overlap cid start end (_startChromIx $ _rtree fl) 
-                                 (_startBase $ _rtree fl)
-                                 (_endChromIx $ _rtree fl)
-                                 (_endBase $ _rtree fl)
-            then do blks <- lift $ findOverlappingBlocks endi handle rTreeOffset cid start end
-                    queryBlocks endi handle blks cid start end
-                        $= CL.map (\(_,a,b,c) -> (chr,a,b,c))
-            else return ()
+        when (overlap cid start end (_startChromIx $ _rtree fl) 
+                                    (_startBase $ _rtree fl)
+                                    (_endChromIx $ _rtree fl)
+                                    (_endBase $ _rtree fl) )
+            $ do 
+                blks <- lift $ findOverlappingBlocks endi handle rTreeOffset cid start end
+                queryBlocks endi handle blks cid start end
+                    $= CL.map (\(_,a,b,c) -> (chr,a,b,c))
   where
 
     handle = _filehandle fl
@@ -309,7 +200,7 @@ queryBlocks e h blks cid start end = forM_ blks $ \(offset, size) -> do
 {-# INLINE queryBlocks #-}
 
 toBedRecords :: Monad m => Endianness -> B.ByteString -> Producer m (Int, Int, Int, B.ByteString)
-toBedRecords e bs = go bs
+toBedRecords e = go
   where
     go s | B.null s = return ()
          | otherwise = do
@@ -322,14 +213,14 @@ toBedRecords e bs = go bs
 {-# INLINE toBedRecords #-}
 
 findOverlappingBlocks :: Endianness -> Handle -> Integer -> Int -> Int -> Int -> IO [(Int, Int)]
-findOverlappingBlocks e h i cid start end = fmap catMaybes $ go i
+findOverlappingBlocks e h i cid start end = catMaybes <$> go i
   where
     go i' = do
         hSeek h AbsoluteSeek i'
         (isLeaf, n) <- readNode 
         if isLeaf
            then replicateM n readLeafItem
-           else fmap concat $ replicateM n readNonLeafItem
+           else concat <$> replicateM n readNonLeafItem
 
     readNode = do isLeaf <- hReadBool h
                   _ <- hReadBool h
@@ -343,7 +234,7 @@ findOverlappingBlocks e h i cid start end = fmap catMaybes $ go i
         ed <- hReadInt32 e h
         offset <- hReadInt64 e h
         size <- hReadInt64 e h
-        return $ if (overlap cid start end stCIx st edCIx ed)
+        return $ if overlap cid start end stCIx st edCIx ed
                     then Just (offset, size)
                     else Nothing
 
@@ -353,7 +244,7 @@ findOverlappingBlocks e h i cid start end = fmap catMaybes $ go i
         edCIx <- hReadInt32 e h
         ed <- hReadInt32 e h
         next <- hReadInt64 e h
-        if (overlap cid start end stCIx st edCIx ed)
+        if overlap cid start end stCIx st edCIx ed
            then go $ fromIntegral next
            else return []
 {-# INLINE findOverlappingBlocks #-}
