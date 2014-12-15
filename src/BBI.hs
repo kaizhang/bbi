@@ -52,6 +52,9 @@ openBbiFile fl = do
     Right rtree <- getRTreeHeader (_endian header) h (fromIntegral $ _fullIndexOffset header)
     return $ BbiFile h header (M.fromList t) rtree
 
+closeBbiFile :: BbiFile -> IO ()
+closeBbiFile = hClose . _filehandle
+
 getBbiFileHeader :: Handle -> IO (Maybe BbiFileHeader)
 getBbiFileHeader h = do
     ft <- getFileType h
@@ -275,7 +278,7 @@ overlap qChr qStart qEnd rStartChr rStart rEndChr rEnd =
     (qChr, qStart) < (rEndChr, rEnd) && (qChr, qEnd) > (rStartChr, rStart)
 {-# INLINE overlap #-}
 
-query :: BbiFile -> (B.ByteString, Int, Int) -> Source IO (Int, Int, Int, B.ByteString)
+query :: BbiFile -> (B.ByteString, Int, Int) -> Source IO (B.ByteString, Int, Int, B.ByteString)
 query fl (chr, start, end)
     | isNothing chrId = return ()
     | otherwise = do
@@ -284,8 +287,9 @@ query fl (chr, start, end)
                                  (_startBase $ _rtree fl)
                                  (_endChromIx $ _rtree fl)
                                  (_endBase $ _rtree fl)
-            then findOverlappingBlocks endi handle rTreeOffset cid start end $=
-                    queryBlocks endi handle cid start end
+            then do blks <- lift $ findOverlappingBlocks endi handle rTreeOffset cid start end
+                    queryBlocks endi handle blks cid start end
+                        $= CL.map (\(_,a,b,c) -> (chr,a,b,c))
             else return ()
   where
 
@@ -295,19 +299,13 @@ query fl (chr, start, end)
     rTreeOffset = fromIntegral $ (_fullIndexOffset . _header) fl + 48
 {-# INLINE query #-}
 
-queryBlocks :: Endianness -> Handle -> Int -> Int -> Int -> Conduit (Int, Int) IO (Int, Int, Int, B.ByteString)
-queryBlocks e h cid start end = do
-    x <- await
-    case x of
-        Nothing -> return ()
-        Just (offset, size) -> do
-            bs <- lift $ do hSeek h AbsoluteSeek $ fromIntegral offset
-                            BL.hGet h size
-            (toBedRecords e . BL.toStrict . decompress) bs $= CL.filter f
+queryBlocks :: Endianness -> Handle -> [(Int, Int)] -> Int -> Int -> Int -> Source IO (Int, Int, Int, B.ByteString)
+queryBlocks e h blks cid start end = forM_ blks $ \(offset, size) -> do
+    bs <- lift $ do hSeek h AbsoluteSeek $ fromIntegral offset
+                    BL.hGet h size
+    (toBedRecords e . BL.toStrict . decompress) bs $= CL.filter f
   where
-    f (chrid, st, ed, _) = if chrid /= cid
-                              then False
-                              else ed > start &&  st < end
+    f (chrid, st, ed, _) = chrid == cid && ed > start && st < end
 {-# INLINE queryBlocks #-}
 
 toBedRecords :: Monad m => Endianness -> B.ByteString -> Producer m (Int, Int, Int, B.ByteString)
@@ -323,39 +321,44 @@ toBedRecords e bs = go bs
              go $ B.tail remain
 {-# INLINE toBedRecords #-}
 
-findOverlappingBlocks :: Endianness -> Handle -> Integer -> Int -> Int -> Int -> Source IO (Int, Int)
-findOverlappingBlocks e h i cid start end = go i
+findOverlappingBlocks :: Endianness -> Handle -> Integer -> Int -> Int -> Int -> IO [(Int, Int)]
+findOverlappingBlocks e h i cid start end = fmap catMaybes $ go i
   where
     go i' = do
-        lift $ hSeek h AbsoluteSeek i'
-        (isLeaf, n) <- lift $ readNode 
+        hSeek h AbsoluteSeek i'
+        (isLeaf, n) <- readNode 
         if isLeaf
-           then mapM_ readLeafItem . map (\x -> (i'+4) + fromIntegral (x*32)) $ [0..n-1]
-           else replicateM_ n readNonLeafItem
+           then replicateM n readLeafItem
+           else fmap concat $ replicateM n readNonLeafItem
 
     readNode = do isLeaf <- hReadBool h
                   _ <- hReadBool h
                   count <- hReadInt16 e h
                   return (isLeaf, count)
 
-    readLeafItem pos = do
-        lift $ hSeek h AbsoluteSeek pos
-        stCIx <- lift $ hReadInt32 e h
-        st <- lift $ hReadInt32 e h
-        edCIx <- lift $ hReadInt32 e h
-        ed <- lift $ hReadInt32 e h
-        offset <- lift $ hReadInt64 e h
-        size <- lift $ hReadInt64 e h
-        when (overlap cid start end stCIx st edCIx ed) $ yield (offset, size)
+    readLeafItem = do
+        stCIx <- hReadInt32 e h
+        st <- hReadInt32 e h
+        edCIx <- hReadInt32 e h
+        ed <- hReadInt32 e h
+        offset <- hReadInt64 e h
+        size <- hReadInt64 e h
+        return $ if (overlap cid start end stCIx st edCIx ed)
+                    then Just (offset, size)
+                    else Nothing
 
-    readNonLeafItem = do stCIx <- lift $ hReadInt32 e h
-                         st <- lift $ hReadInt32 e h
-                         edCIx <- lift $ hReadInt32 e h
-                         ed <- lift $ hReadInt32 e h
-                         next <- lift $ hReadInt64 e h
-                         when (overlap cid start end stCIx st edCIx ed) $
-                            go $ fromIntegral next
+    readNonLeafItem = do 
+        stCIx <- hReadInt32 e h
+        st <- hReadInt32 e h
+        edCIx <- hReadInt32 e h
+        ed <- hReadInt32 e h
+        next <- hReadInt64 e h
+        if (overlap cid start end stCIx st edCIx ed)
+           then go $ fromIntegral next
+           else return []
 {-# INLINE findOverlappingBlocks #-}
 
-test fl = do x <- openBbiFile fl
-             query x ("chr1", 100, 100000000) $$ CL.consume
+streamBbi :: BbiFile -> Source IO (B.ByteString, Int, Int, B.ByteString)
+streamBbi fl = mapM_ (query fl) allChroms
+  where
+    allChroms = map (\(chr, (_, size)) -> (chr, 0, size-1)) . M.toList . _chromTree $ fl
