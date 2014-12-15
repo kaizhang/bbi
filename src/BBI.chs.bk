@@ -1,0 +1,105 @@
+{-# LANGUAGE ForeignFunctionInterface  #-}
+--------------------------------------------------------------------------------
+-- |
+-- Module      :  $Header$
+-- Copyright   :  (c) Kai Zhang
+-- License     :  <license>
+
+-- Maintainer  :  kai@kzhang.org
+-- Stability   :  experimental
+-- Portability :  portable
+
+-- <module description starting at first column>
+--------------------------------------------------------------------------------
+
+module BBI where
+
+import Foreign
+import Foreign.C
+import Control.Applicative ((<$>), (<*>))
+
+#include "bigBed.h"
+#include "help.h"
+
+#c
+typedef struct bigBedInterval bigBedInterval_t;
+#endc
+
+data BbiFile
+{#pointer *bbiFile as BbiFilePtr -> BbiFile #}
+
+data BigBedInterval
+{#pointer *bigBedInterval as BigBedIntervalPtr -> BigBedInterval #}
+
+{-
+data BigBedInterval = BigBedInterval
+    { _next :: Ptr BigBedInterval
+    , _start :: CUInt
+    , _end :: CUInt
+    , _rest :: CString
+    , _chromId :: CUInt
+    }
+
+{-
+instance Storable BigBedInterval where
+    sizeOf _ = {#sizeof bigBedInterval_t #}
+    alignment _ = 8
+    peek p = BigBedInterval
+        <$> {#get bigBedInterval_t->next #} p
+        <*> {#get bigBedInterval_t->start #} p
+        <*> {#get bigBedInterval_t->end #} p
+        <*> {#get bigBedInterval_t->rest #} p
+        <*> {#get bigBedInterval_t->chromId #} p
+
+    poke p (BigBedInterval a b c d e) = do
+        {#set bigBedInterval_t.next #} p a
+        {#set bigBedInterval_t.start #} p b
+        {#set bigBedInterval_t.end #} p c
+        {#set bigBedInterval_t.rest #} p d
+        {#set bigBedInterval_t.chromId #} p e
+-}
+
+instance Storable BigBedInterval where
+    sizeOf _ = 32
+{-# LINE 38 "src/BBI.chs" #-}
+
+    alignment _ = 8
+    peek p = BigBedInterval
+        <$> (\ptr -> do {peekByteOff ptr 0 ::IO (Ptr BigBedInterval)}) p
+        <*> (\ptr -> do {peekByteOff ptr 8 ::IO CUInt}) p
+        <*> (\ptr -> do {peekByteOff ptr 12 ::IO CUInt}) p
+        <*> (\ptr -> do {peekByteOff ptr 16 ::IO (Ptr CChar)}) p
+        <*> (\ptr -> do {peekByteOff ptr 24 ::IO CUInt}) p
+
+    poke p (BigBedInterval a b c d e) = do
+        (\ptr val -> do {pokeByteOff ptr 0 (val::(Ptr BigBedInterval))}) p a
+        (\ptr val -> do {pokeByteOff ptr 8 (val::CUInt)}) p b
+        (\ptr val -> do {pokeByteOff ptr 12 (val::CUInt)}) p c
+        (\ptr val -> do {pokeByteOff ptr 16 (val::(Ptr CChar))}) p d
+        (\ptr val -> do {pokeByteOff ptr 24 (val::CUInt)}) p e
+
+-}
+
+{-
+hs_bigBedIntervalQuery :: BbiFilePtr -> String -> Int -> Int -> IO (Ptr BigBedInterval)
+hs_bigBedIntervalQuery fl chr start end = withCString chr $ \c -> do
+    ptr <- c_bigBedInterval fl c (fromIntegral start) (fromIntegral end) 0
+    t <- peekByteOff ptr 8 ::IO Int
+    print t
+    return ptr
+
+foreign import ccall "bigBedIntervalQuery"
+    c_bigBedInterval :: BbiFilePtr -> CString -> CUInt -> CUInt -> CInt -> IO (Ptr BigBedInterval)
+-}
+
+{#fun showInterval as hs_showInterval
+    {`BigBedIntervalPtr'} -> `Int' #}
+
+{#fun bigBedIntervalQuery2 as hs_bigBedIntervalQuery
+    {`BbiFilePtr', `String', `Int', `Int', `Int'} -> `BigBedIntervalPtr' #}
+
+{#fun bigBedFileCheckSigs as hs_bigBedFileCheckSigs
+    {`String'} -> `Bool' #}
+
+{#fun bigBedFileOpen as hs_bigBedFileOpen
+    {`String'} -> `BbiFilePtr' #}
