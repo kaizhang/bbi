@@ -4,6 +4,7 @@
 module Data.BBI
     ( BbiFile(..)
     , BbiFileHeader(..)
+    , FileType(..)
     , openBbiFile
     , closeBbiFile
     , getBbiFileHeader
@@ -197,7 +198,10 @@ overlappingBlocks fl (cid, start, end) =
         (isLeaf, n) <- readNode 
         if isLeaf
            then replicateM n readLeafItem
-           else concat <$> replicateM n readNonLeafItem
+           else do 
+               pos <- fromIntegral <$> hTell h
+               results <- mapM readNonLeafItem $ map (\x -> pos + x*24) [0..n-1]
+               return $ concat results
 
     readNode = do isLeaf <- hReadBool h
                   _ <- hReadBool h
@@ -215,7 +219,8 @@ overlappingBlocks fl (cid, start, end) =
                     then Just (offset, size)
                     else Nothing
 
-    readNonLeafItem = do 
+    readNonLeafItem p = do 
+        hSeek h AbsoluteSeek $ fromIntegral p
         stCIx <- hReadInt32 e h
         st <- hReadInt32 e h
         edCIx <- hReadInt32 e h

@@ -1,4 +1,6 @@
-module Data.BBI.BigWig where
+module Data.BBI.BigWig
+    ( queryBWFile
+    ) where
 
 import Control.Monad (unless)
 import Control.Monad.Trans (lift)
@@ -10,9 +12,9 @@ import Data.BBI
 import Data.BBI.Utils
 
 -- | wig section type
-data Wig = VarStep
-         | FixedStep
-         | BedGraph
+data SectionType = VarStep
+                 | FixedStep
+                 | BedGraph
     deriving (Show)
 
 data WigHeader = WigHeader
@@ -21,13 +23,13 @@ data WigHeader = WigHeader
     , _chromEnd :: !Int
     , _itemStep :: !Int
     , _itemSpan :: !Int
-    , _type :: !Wig
+    , _type :: !SectionType
     , _reserve :: !Int
     , _itemCount :: !Int
     } deriving (Show)
 
-queryWigFile :: BbiFile -> (B.ByteString, Int, Int) -> Source IO (B.ByteString, Int, Int, Float)
-queryWigFile fl (chr, start, end) = unless (isNothing cid) $ do
+queryBWFile :: BbiFile -> (B.ByteString, Int, Int) -> Source IO (B.ByteString, Int, Int, Float)
+queryBWFile fl (chr, start, end) = unless (isNothing cid) $ do
     blks <- lift $ overlappingBlocks fl (fromJust cid, start, end)
     readBlocks fl blks $= toWigRecords endi $= filter'
   where
@@ -39,15 +41,15 @@ queryWigFile fl (chr, start, end) = unless (isNothing cid) $ do
                        else Nothing
     cid = getChromId fl chr
     endi = _endian . _header $ fl
-{-# INLINE queryWigFile #-}
+{-# INLINE queryBWFile #-}
 
 toWigRecords :: Monad m => Endianness -> Conduit B.ByteString m (Int, Int, Int, Float)
 toWigRecords endi = CL.concatMap $ \bs ->
-    let header = readWigHeader endi bs :: WigHeader
+    let header = readWigHeader endi bs
     in case _type header of
         VarStep -> readVarStep header $ B.drop 24 bs
         FixedStep -> readFixedStep header $ B.drop 24 bs
-        _ -> undefined
+        BedGraph -> readBedGraph header $ B.drop 24 bs
   where
     readVarStep h = loop 0
       where
@@ -65,10 +67,20 @@ toWigRecords endi = CL.concatMap $ \bs ->
         loop st i x | i >= n = []
                     | otherwise = let v = readFloat32 . B.take 4 $ x
                                   in (cid, st, st+sp, v) : loop (st+step) (i+1) (B.drop 4 x) 
-        n = _itemSpan h
+        n = _itemCount h
         sp = _itemSpan h
         step = _itemStep h
         start = _chromStart h
+        cid = _chromId h
+
+    readBedGraph h = loop 0
+      where
+        loop i x | i >= n = []
+                 | otherwise = let s = readInt32 endi . B.take 4 $ x
+                                   e = readInt32 endi . B.take 4 . B.drop 4 $ x
+                                   v = readFloat32 . B.take 4 . B.drop 8 $ x
+                               in (cid, s, e, v) : loop (i+1) (B.drop 12 x)
+        n = _itemCount h
         cid = _chromId h
 {-# INLINE toWigRecords #-}
 
@@ -85,5 +97,5 @@ readWigHeader e s = WigHeader (readInt32 e . B.take 4 $ s)
     f x | x == 1 = BedGraph
         | x == 2 = VarStep
         | x == 3 = FixedStep
-        | otherwise = error "Unknow Wig seciton type" 
+        | otherwise = error "Unknown Wig seciton type" 
 {-# INLINE readWigHeader #-}

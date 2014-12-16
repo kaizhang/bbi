@@ -65,7 +65,7 @@ readFloat32 :: B.ByteString -> Float
 readFloat32 = fromRight . fst . runGet getFloat32host
 {-# INLINE readFloat32 #-}
 
-fromRight :: Either a b -> b
+fromRight :: Either String b -> b
 fromRight (Right x) = x
-fromRight _ = error "Is Left"
+fromRight (Left s) = error s
 {-# INLINE fromRight #-}
