@@ -1,7 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 
-module Data.BBI where
+module Data.BBI
+    ( BbiFile(..)
+    , BbiFileHeader(..)
+    , openBbiFile
+    , closeBbiFile
+    , getBbiFileHeader
+    , getChromId
+    , overlappingBlocks
+    , readBlocks
+    ) where
 
 import qualified Data.Map.Strict as M
 import Control.Applicative ((<$>))
@@ -10,7 +19,6 @@ import qualified Data.ByteString.Lazy as BL
 import System.IO
 import Data.Maybe
 import Data.Conduit
-import qualified Data.Conduit.List as CL
 import Control.Monad.State
 import Codec.Compression.Zlib (decompress)
 import Data.BBI.Utils
@@ -169,54 +177,23 @@ overlap qChr qStart qEnd rStartChr rStart rEndChr rEnd =
     (qChr, qStart) < (rEndChr, rEnd) && (qChr, qEnd) > (rStartChr, rStart)
 {-# INLINE overlap #-}
 
-query :: BbiFile -> (B.ByteString, Int, Int) -> Source IO (B.ByteString, Int, Int, B.ByteString)
-query fl (chr, start, end)
-    | isNothing chrId = return ()
-    | otherwise = do
-        let cid = fst . fromJust $ chrId
-        when (overlap cid start end (_startChromIx $ _rtree fl) 
-                                    (_startBase $ _rtree fl)
-                                    (_endChromIx $ _rtree fl)
-                                    (_endBase $ _rtree fl) )
-            $ do 
-                blks <- lift $ findOverlappingBlocks endi handle rTreeOffset cid start end
-                queryBlocks endi handle blks cid start end
-                    $= CL.map (\(_,a,b,c) -> (chr,a,b,c))
-  where
+getChromId :: BbiFile -> B.ByteString -> Maybe Int
+getChromId fl chr = fmap fst . M.lookup chr . _chromTree $ fl
+{-# INLINE getChromId #-}
 
-    handle = _filehandle fl
-    endi = _endian $ _header fl
-    chrId = M.lookup chr $ _chromTree fl
-    rTreeOffset = fromIntegral $ (_fullIndexOffset . _header) fl + 48
-{-# INLINE query #-}
-
-queryBlocks :: Endianness -> Handle -> [(Int, Int)] -> Int -> Int -> Int -> Source IO (Int, Int, Int, B.ByteString)
-queryBlocks e h blks cid start end = forM_ blks $ \(offset, size) -> do
-    bs <- lift $ do hSeek h AbsoluteSeek $ fromIntegral offset
-                    BL.hGet h size
-    (toBedRecords e . BL.toStrict . decompress) bs $= CL.filter f
+overlappingBlocks :: BbiFile -> (Int, Int, Int) -> IO [(Int, Int)]
+overlappingBlocks fl (cid, start, end) =
+    if overlap cid start end (_startChromIx $ _rtree fl)
+                             (_startBase $ _rtree fl)
+                             (_endChromIx $ _rtree fl)
+                             (_endBase $ _rtree fl)
+       then catMaybes <$> go ((fromIntegral . _fullIndexOffset . _header) fl + 48)
+       else return []
   where
-    f (chrid, st, ed, _) = chrid == cid && ed > start && st < end
-{-# INLINE queryBlocks #-}
-
-toBedRecords :: Monad m => Endianness -> B.ByteString -> Producer m (Int, Int, Int, B.ByteString)
-toBedRecords e = go
-  where
-    go s | B.null s = return ()
-         | otherwise = do
-             let chr = readInt32 e . B.take 4 $ s
-                 start = readInt32 e . B.take 4 . B.drop 4 $ s
-                 end = readInt32 e . B.take 4 . B.drop 8 $ s
-                 (rest, remain) = B.break (==0) . B.drop 12 $ s
-             yield (chr, start, end, rest)
-             go $ B.tail remain
-{-# INLINE toBedRecords #-}
-
-findOverlappingBlocks :: Endianness -> Handle -> Integer -> Int -> Int -> Int -> IO [(Int, Int)]
-findOverlappingBlocks e h i cid start end = catMaybes <$> go i
-  where
-    go i' = do
-        hSeek h AbsoluteSeek i'
+    h = _filehandle fl
+    e = _endian . _header $ fl
+    go i = do
+        hSeek h AbsoluteSeek i
         (isLeaf, n) <- readNode 
         if isLeaf
            then replicateM n readLeafItem
@@ -247,9 +224,20 @@ findOverlappingBlocks e h i cid start end = catMaybes <$> go i
         if overlap cid start end stCIx st edCIx ed
            then go $ fromIntegral next
            else return []
-{-# INLINE findOverlappingBlocks #-}
+{-# INLINE overlappingBlocks #-}
 
+readBlocks :: BbiFile -> [(Int, Int)] -> Source IO B.ByteString
+readBlocks fl blks = forM_ blks $ \(offset, size) -> do
+    bs <- lift $ do hSeek handle AbsoluteSeek $ fromIntegral offset
+                    BL.hGet handle size
+    yield . BL.toStrict . decompress $ bs
+  where
+    handle = _filehandle fl
+{-# INLINE readBlocks #-}
+
+{-
 streamBbi :: BbiFile -> Source IO (B.ByteString, Int, Int, B.ByteString)
 streamBbi fl = mapM_ (query fl) allChroms
   where
     allChroms = map (\(chr, (_, size)) -> (chr, 0, size-1)) . M.toList . _chromTree $ fl
+    -}

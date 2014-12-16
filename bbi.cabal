@@ -18,6 +18,8 @@ cabal-version:       >=1.10
 library
   exposed-modules:
       Data.BBI
+    , Data.BBI.BigBed
+    , Data.BBI.BigWig
     , Data.BBI.Utils
   -- other-modules:       
 

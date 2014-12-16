@@ -7,6 +7,9 @@ module Data.BBI.Utils
     , hReadInt32
     , readInt16
     , hReadInt16
+    , readInt8
+    , hReadInt8
+    , readFloat32
     ) where
 
 import qualified Data.ByteString as B
@@ -49,6 +52,18 @@ readInt16 BE = fromIntegral . fromRight . fst . runGet getWord16be
 hReadInt16 :: Endianness -> Handle -> IO Int
 hReadInt16 e h = fmap (readInt16 e) . B.hGet h $ 2
 {-# INLINE hReadInt16 #-}
+
+hReadInt8 :: Handle -> IO Int
+hReadInt8 h = fmap readInt8 . B.hGet h $ 1
+{-# INLINE hReadInt8 #-}
+
+readInt8 :: B.ByteString -> Int
+readInt8 = fromIntegral . fromRight . fst . runGet getWord8
+{-# INLINE readInt8 #-}
+
+readFloat32 :: B.ByteString -> Float
+readFloat32 = fromRight . fst . runGet getFloat32host
+{-# INLINE readFloat32 #-}
 
 fromRight :: Either a b -> b
 fromRight (Right x) = x
