@@ -10,6 +10,7 @@ module Data.BBI.Utils
     , readInt8
     , hReadInt8
     , readFloat32
+    , fromRight
     ) where
 
 import qualified Data.ByteString as B

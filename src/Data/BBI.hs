@@ -13,15 +13,15 @@ module Data.BBI
     , readBlocks
     ) where
 
-import qualified Data.Map.Strict as M
+import Codec.Compression.Zlib (decompress)
 import Control.Applicative ((<$>))
+import Control.Monad.State
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
-import System.IO
-import Data.Maybe
 import Data.Conduit
-import Control.Monad.State
-import Codec.Compression.Zlib (decompress)
+import Data.Maybe
+import qualified Data.Map.Strict as M
+import System.IO
 import Data.BBI.Utils
 
 data FileType = BigBed
@@ -54,19 +54,19 @@ data BbiFileHeader = BbiFileHeader
 openBbiFile :: FilePath -> IO BbiFile
 openBbiFile fl = do
     h <- openFile fl ReadMode
-    header <- fromJust <$> getBbiFileHeader h
-    Right t <- getChromTreeAsList (_endian header) h (fromIntegral $ _chrTreeOffset header)
-    Right rtree <- getRTreeHeader (_endian header) h (fromIntegral $ _fullIndexOffset header)
+    header <- fromRight <$> getBbiFileHeader h
+    t <- fromRight <$> getChromTreeAsList (_endian header) h (fromIntegral $ _chrTreeOffset header)
+    rtree <- fromRight <$> getRTreeHeader (_endian header) h (fromIntegral $ _fullIndexOffset header)
     return $ BbiFile h header (M.fromList t) rtree
 
 closeBbiFile :: BbiFile -> IO ()
 closeBbiFile = hClose . _filehandle
 
-getBbiFileHeader :: Handle -> IO (Maybe BbiFileHeader)
+getBbiFileHeader :: Handle -> IO (Either String BbiFileHeader)
 getBbiFileHeader h = do
     ft <- getFileType h
     case ft of
-        Just (t, e) -> do
+        Right (t, e) -> do
             hSeek h AbsoluteSeek 4
             v <- hReadInt16 e h
             zl <- hReadInt16 e h
@@ -79,21 +79,21 @@ getBbiFileHeader h = do
             ts <- hReadInt64 e h
             ub <- hReadInt32 e h
             r <- hReadInt64 e h
-            return . Just $ BbiFileHeader t e v zl ct fd fi fc df as ts ub r
-        _ -> return Nothing
+            return . Right $ BbiFileHeader t e v zl ct fd fi fc df as ts ub r
+        Left e -> return $ Left e
 
-getFileType :: Handle -> IO (Maybe (FileType, Endianness))
+getFileType :: Handle -> IO (Either String (FileType, Endianness))
 getFileType h = do
     hSeek h AbsoluteSeek 0
     magic <- B.hGet h 4
     let magicBE = readInt32 BE magic
         magicLE = readInt32 LE magic
     return $ case () of
-        _ | magicBE == bigBedMagic -> Just (BigBed, BE)
-          | magicBE == bigWigMagic -> Just (BigWig, BE)
-          | magicLE == bigBedMagic -> Just (BigBed, LE)
-          | magicLE == bigWigMagic -> Just (BigWig, LE)
-          | otherwise -> Nothing
+        _ | magicBE == bigBedMagic -> Right (BigBed, BE)
+          | magicBE == bigWigMagic -> Right (BigWig, BE)
+          | magicLE == bigBedMagic -> Right (BigBed, LE)
+          | magicLE == bigWigMagic -> Right (BigWig, LE)
+          | otherwise -> Left "not a bigBed/bigWig file"
   where
     bigWigMagic = 0x888FFC26
     bigBedMagic = 0x8789F2EB
@@ -104,16 +104,16 @@ getChromTreeAsList e h offset = do
     hSeek h AbsoluteSeek offset
     magic <- hReadInt32 e h
     if magic /= chromTreeMagic
-       then return $ Left "incorrect chromsome tree magic"
+       then return $ Left "wrong chromosome tree header"
        else do
-           blockSize <- hReadInt32 e h
+           _ <- hReadInt32 e h -- blockSize, not used
            keySize <- hReadInt32 e h
-           valSize <- hReadInt32 e h
-           itemCount <- hReadInt64 e h
-           reserved <- hReadInt64 e h
-           Right <$> traverseTree blockSize keySize valSize
+           _ <- hReadInt32 e h -- valSize, not used
+           _ <- hReadInt64 e h -- itemCount, not used
+           _ <- hReadInt64 e h -- reserved, not used
+           Right <$> traverseTree keySize
   where
-    traverseTree bs ks vs = go
+    traverseTree ks = go
       where
         go = do (isLeaf, n) <- readNode
                 if isLeaf
@@ -200,7 +200,7 @@ overlappingBlocks fl (cid, start, end) =
            then replicateM n readLeafItem
            else do 
                pos <- fromIntegral <$> hTell h
-               results <- mapM readNonLeafItem $ map (\x -> pos + x*24) [0..n-1]
+               results <- mapM (readNonLeafItem . (\x -> pos + x*24)) [0..n-1]
                return $ concat results
 
     readNode = do isLeaf <- hReadBool h

@@ -10,7 +10,7 @@ license-file:        LICENSE
 author:              Kai Zhang
 maintainer:          kai@kzhang.org
 copyright:           (c) 2014 Kai Zhang
-category:            Data
+category:            Bio
 build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10

@@ -1,5 +1,8 @@
 module Data.BBI.BigWig
-    ( queryBWFile
+    ( BWFile
+    , openBWFile
+    , closeBWFile
+    , queryBWFile
     ) where
 
 import Control.Monad (unless)
@@ -11,10 +14,21 @@ import Data.Maybe
 import Data.BBI
 import Data.BBI.Utils
 
+newtype BWFile = BWFile BbiFile
+
+openBWFile :: FilePath -> IO BWFile
+openBWFile fl = do bbi <- openBbiFile fl
+                   case (_filetype . _header) bbi of
+                       BigWig -> return $ BWFile bbi
+                       _ -> error "not a bigWig file"
+
+closeBWFile :: BWFile -> IO ()
+closeBWFile (BWFile fl) = closeBbiFile fl
+
 -- | wig section type
-data SectionType = VarStep
-                 | FixedStep
-                 | BedGraph
+data SectionType = VarStep    -- 0-indexed in binary
+                 | FixedStep  -- 0-indexed in binary
+                 | BedGraph   -- 0-indexed
     deriving (Show)
 
 data WigHeader = WigHeader
@@ -28,8 +42,9 @@ data WigHeader = WigHeader
     , _itemCount :: !Int
     } deriving (Show)
 
-queryBWFile :: BbiFile -> (B.ByteString, Int, Int) -> Source IO (B.ByteString, Int, Int, Float)
-queryBWFile fl (chr, start, end) = unless (isNothing cid) $ do
+-- | the query should be 0-indexed
+queryBWFile :: BWFile -> (B.ByteString, Int, Int) -> Source IO (B.ByteString, Int, Int, Double)
+queryBWFile (BWFile fl) (chr, start, end) = unless (isNothing cid) $ do
     blks <- lift $ overlappingBlocks fl (fromJust cid, start, end)
     readBlocks fl blks $= toWigRecords endi $= filter'
   where
@@ -37,12 +52,13 @@ queryBWFile fl (chr, start, end) = unless (isNothing cid) $ do
                  let s' = max start s
                      e' = min end e
                  in if c == fromJust cid && s' < e'
-                       then Just (chr, s', e', v)
+                       then Just (chr, s', e', realToFrac v)
                        else Nothing
     cid = getChromId fl chr
     endi = _endian . _header $ fl
 {-# INLINE queryBWFile #-}
 
+-- | convert bytestring to wig style record, but the output is 0-indexed
 toWigRecords :: Monad m => Endianness -> Conduit B.ByteString m (Int, Int, Int, Float)
 toWigRecords endi = CL.concatMap $ \bs ->
     let header = readWigHeader endi bs
@@ -54,7 +70,7 @@ toWigRecords endi = CL.concatMap $ \bs ->
     readVarStep h = loop 0
       where
         loop i x | i >= n = []
-                 | otherwise = let s = readInt32 endi . B.take 4 $ x
+                 | otherwise = let s = (readInt32 endi . B.take 4) x
                                    e = s + sp
                                    v = readFloat32 . B.take 4 . B.drop 4 $ x
                                in (cid, s, e, v) : loop (i+1) (B.drop 8 x)
