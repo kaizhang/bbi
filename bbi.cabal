@@ -24,8 +24,8 @@ library
   -- other-modules:       
 
   build-depends:
-      base >=4.7 && <4.8
-    , binary-strict
+      base >=4.7 && <5.0
+    , binary-strict >=0.4.8.2
     , bytestring
     , conduit
     , mtl
