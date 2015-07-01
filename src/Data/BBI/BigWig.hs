@@ -72,7 +72,7 @@ toWigRecords endi = CL.concatMap $ \bs ->
         loop i x | i >= n = []
                  | otherwise = let s = (readInt32 endi . B.take 4) x
                                    e = s + sp
-                                   v = readFloat32 . B.take 4 . B.drop 4 $ x
+                                   v = readFloat32 endi . B.take 4 . B.drop 4 $ x
                                in (cid, s, e, v) : loop (i+1) (B.drop 8 x)
         n = _itemCount h
         sp = _itemSpan h
@@ -81,7 +81,7 @@ toWigRecords endi = CL.concatMap $ \bs ->
     readFixedStep h = loop start 0
       where
         loop st i x | i >= n = []
-                    | otherwise = let v = readFloat32 . B.take 4 $ x
+                    | otherwise = let v = readFloat32 endi . B.take 4 $ x
                                   in (cid, st, st+sp, v) : loop (st+step) (i+1) (B.drop 4 x) 
         n = _itemCount h
         sp = _itemSpan h
@@ -94,7 +94,7 @@ toWigRecords endi = CL.concatMap $ \bs ->
         loop i x | i >= n = []
                  | otherwise = let s = readInt32 endi . B.take 4 $ x
                                    e = readInt32 endi . B.take 4 . B.drop 4 $ x
-                                   v = readFloat32 . B.take 4 . B.drop 8 $ x
+                                   v = readFloat32 endi . B.take 4 . B.drop 8 $ x
                                in (cid, s, e, v) : loop (i+1) (B.drop 12 x)
         n = _itemCount h
         cid = _chromId h

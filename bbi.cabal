@@ -25,8 +25,8 @@ library
 
   build-depends:
       base >=4.7 && <5.0
-    , binary-strict >=0.4.8.1
     , bytestring >=0.10.0.0
+    , cereal >=0.4.0
     , conduit >=1.2.0.0
     , mtl
     , containers
