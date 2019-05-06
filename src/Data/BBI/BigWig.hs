@@ -8,8 +8,7 @@ module Data.BBI.BigWig
 import Control.Monad (unless)
 import Control.Monad.Trans (lift)
 import qualified Data.ByteString as B
-import Data.Conduit
-import qualified Data.Conduit.List as CL
+import Conduit
 import Data.Maybe
 import Data.BBI
 import Data.BBI.Utils
@@ -48,7 +47,7 @@ queryBWFile (BWFile fl) (chr, start, end) = unless (isNothing cid) $ do
     blks <- lift $ overlappingBlocks fl (fromJust cid, start, end)
     readBlocks fl blks $= toWigRecords endi $= filter'
   where
-    filter' = CL.mapMaybe $ \(c, s, e, v) ->
+    filter' = concatMapC $ \(c, s, e, v) ->
                  let s' = max start s
                      e' = min end e
                  in if c == fromJust cid && s' < e'
@@ -60,7 +59,7 @@ queryBWFile (BWFile fl) (chr, start, end) = unless (isNothing cid) $ do
 
 -- | convert bytestring to wig style record, but the output is 0-indexed
 toWigRecords :: Monad m => Endianness -> Conduit B.ByteString m (Int, Int, Int, Float)
-toWigRecords endi = CL.concatMap $ \bs ->
+toWigRecords endi = concatMapC $ \bs ->
     let header = readWigHeader endi bs
     in case _type header of
         VarStep -> readVarStep header $ B.drop 24 bs
@@ -82,7 +81,7 @@ toWigRecords endi = CL.concatMap $ \bs ->
       where
         loop st i x | i >= n = []
                     | otherwise = let v = readFloat32 endi . B.take 4 $ x
-                                  in (cid, st, st+sp, v) : loop (st+step) (i+1) (B.drop 4 x) 
+                                  in (cid, st, st+sp, v) : loop (st+step) (i+1) (B.drop 4 x)
         n = _itemCount h
         sp = _itemSpan h
         step = _itemStep h
@@ -113,5 +112,5 @@ readWigHeader e s = WigHeader (readInt32 e . B.take 4 $ s)
     f x | x == 1 = BedGraph
         | x == 2 = VarStep
         | x == 3 = FixedStep
-        | otherwise = error "Unknown Wig seciton type" 
+        | otherwise = error "Unknown Wig seciton type"
 {-# INLINE readWigHeader #-}
